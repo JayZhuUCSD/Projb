@@ -132,4 +132,41 @@ def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False
                 t = t1
                 t1 = calcT1(t)
             return x
-    
+        
+    elif scheme is 'admm':
+        
+        #initialize iteratable variables
+        gamma = 1
+        G = Grad(y.shape)
+        xBar = H.adjoint(y)
+        zBar = G(xBar)
+        dX = np.zeros(xBar.shape)
+        dZ = np.zeros(zBar.shape)
+        x = None
+        z = None
+        
+        if return_energy:
+            e = []
+            for i in range(m):
+                e.append(energy(H,x,y,tau))
+                x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(dX, gamma) + H.gram_resolvent((gamma * H.adjoint(y)), gamma)
+                z = softthresh(zBar + dZ, gamma*tau)
+                xBar = G.gram_resolvent(x, 1) - G.gram_resolvent(dX, 1) + G.gram_resolvent(G.adjoint(np.sum(z-dZ, axis=2)),1)
+                zBar = G(xBar)
+                dX = dX - x + xBar
+                dZ = dZ - z + zBar
+            return x, e
+        else:
+            for i in range(m):
+                print('iteration %d' % i)
+                x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(dX, gamma) + H.gram_resolvent(gamma * H.adjoint(y), gamma)
+                z = softthresh(zBar + dZ, gamma*tau)
+                xBar = G.gram_resolvent(x, 1) - G.gram_resolvent(dX, 1) + G.gram_resolvent(G.adjoint(np.sum(z-dZ, axis=2)),1)
+                zBar = G(xBar)
+                dX = dX - x + xBar
+                dZ = dZ - z + zBar
+            return x
+        
+def softthresh(z, t):
+    z[np.abs(z) <= t] = 0
+    return z - np.sign(z)*t
