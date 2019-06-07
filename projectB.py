@@ -139,6 +139,12 @@ def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False
         G = Grad(x.shape)
         op1 = 0.5 * np.sum(np.square(y-H(x)))
         op2 = tau * np.sum(np.abs(G(x)))
+        print('Energy: %f' % (op1+op2))
+        return op1 + op2
+    
+    def energyGen(H,x,y,Gamma,tau):
+        op1 = 0.5 * np.sum(np.square(y-H(x)))
+        op2 = tau * np.sum(np.abs(Gamma(x)))
         return op1 + op2
     
     def loss(H, x, y, tau, epsilon):
@@ -219,8 +225,9 @@ def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False
         if return_energy:
             e = []
             for i in range(m):
-                e.append(energy(H,x,y,tau))
+                
                 x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(dX, gamma) + H.gram_resolvent((gamma * H.adjoint(y)), gamma)
+                e.append(energy(H,x,y,tau))
                 z = softthresh(zBar + dZ, gamma*tau)
                 xBar = G.gram_resolvent(x, 1) - G.gram_resolvent(dX, 1) + G.gram_resolvent(G.adjoint(np.sum(z-dZ, axis=2)),1)
                 zBar = G(xBar)
@@ -237,43 +244,34 @@ def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False
                 dX = dX - x + xBar
                 dZ = dZ - z + zBar
             return x
+        
     elif scheme is 'cp':
         
-        #initialize
+        tau = rho * sig
+        
+        #init
         G = Grad(y.shape)
         gamma = 1
         theta = 1
-        k = 1 / (G.norm_2()**2)
+        k = 1/(G.norm2()**2)
         x = H.adjoint(y)
+        z = np.zeros(G(x).shape)
         v = np.zeros(x.shape)
-        z = np.zeros((k*G(v)).shape)
-        zBar = None
-        xBar = None
-        prevX = None
+        e = []
         
+        for i in range(m):
+            e.append(energy(H,x,y,tau))
+            print('iteration %d' % i)
+            zBar = z + k * G(v)
+            z = zBar - softthresh(zBar, tau)
+            xBar = x - gamma*G.adjoint(z)
+            prevX = np.copy(x)
+            x = H.gram_resolvent((xBar + (gamma*H.adjoint(y))), gamma)
+            v = x + theta*(x-prevX)
+                                 
         if return_energy:
-            e = []
-            for i in range(m):
-                print('iteration %d' %i)
-                e.append(energy(H,x,y,tau))
-                zBar = z + k*G(v)
-                z = zBar - softthresh(zBar, tau)
-                xBar = x - gamma * G.adjoint(z)
-                prevX = np.copy(x)
-                x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
-                v = x + theta*(x - prevX)
             return x, e
-        else:
-            for i in range(m):
-                print('iteration %d' % i)
-                zBar = z + k*G(v)
-                z = zBar - softthresh(zBar, tau)
-                xBar = x - gamma * G.adjoint(z)
-                prevX = np.copy(x)
-                x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
-                v = x + theta*(x - prevX)
-            return x
-        
+        return x
         
 def softthresh(z, t):
     z[np.abs(z) <= t] = 0
@@ -281,13 +279,185 @@ def softthresh(z, t):
 
 def tgv(y, sig, H=None, zeta=.1, rho=1, m=400, return_energy=False):
     
+    
+    def energyGen(H,x,y,Gamma,tau):
+        op1 = 0.5 * np.sum(np.square(y-H(x[0])))
+        t = Gamma(x)
+        
+        op2 = tau * (np.sum(np.abs(t[0])) + np.sum(np.abs(t[1])))
+        print("Energy: %f" % (op1+op2))
+        return op1 + op2
+    
+    if H is None:
+        H = Identity(y.shape)
+    
+    gamma = 1
+    G = Gamma(y.shape, zeta)
+    tau = rho * sig
+    gr = Grad(y.shape)
+    zeroGrad = np.zeros(gr(y).shape)
+    zeroImg = np.zeros(y.shape)
+    
+    X = [None, None]
+    Z = [None, None]
+    ZBar = [None, None]
+    XBar = [None, None]
+    DX = [None, None]
+    DZ = [None, None]
+    
+    XBar[0] = H.adjoint(y)
+    XBar[1] = np.copy(zeroGrad)
+    
+    ZBar[0] = gr(XBar[0])
+    ZBar[1] = np.copy(zeroImg)
+    
+    DX[0] = np.copy(zeroImg)
+    DX[1] = np.copy(zeroGrad)
+    DZ[0] = np.copy(zeroGrad)
+    DZ[1] = np.copy(zeroImg)
+    
+    if return_energy:
+        e = []
+        for i in range(m):
+            
+            print('iteration %d' %i)
+            star = XBar[0] + DX[0] + gamma * H.adjoint(y)
+            X[0] = star + gamma * H.gram(star)
+            X[1] = XBar[1] + DX[1]
+            
+            Z[0] = softthresh(ZBar[0] + DZ[0], gamma*tau)
+            Z[1] = softthresh(ZBar[1] + DZ[1], gamma*tau)
+            
+            star2 = [None, None]
+            inner = [None, None]
+            inner[0] = Z[0] - DZ[0]
+            inner[1] = Z[1] - DZ[1]
+            t = G.adjoint(inner)
+            star2[0] = X[0] - DX[0] + t[0]
+            star2[1] = X[1] - DX[1] + t[1]
+            t2 = G.gram_resolvent(star2, 1)
+            XBar[0] = t2[0]
+            XBar[1] = t2[1]
+            
+            t = G(XBar)
+            ZBar[0] = t[0]
+            ZBar[1] = t[1]
+            
+            DX[0] = DX[0] - X[0] + XBar[0]
+            DX[1] = DX[1] - X[1] + XBar[1]
+            
+            DZ[0] = DZ[0] - Z[0] + ZBar[0]
+            DZ[1] = DZ[1] - Z[1] + ZBar[1]
+            
+            e.append(energyGen(H,X,y,G,tau))
+            
+        return X, e
+    else:
+        for i in range(m):
+            print('iteration %d' %i)
+            star = XBar[0] + DX[0] + gamma * H.adjoint(y)
+            X[0] = star + gamma * H.gram(star)
+            X[1] = XBar[1] + DX[1]
+            
+            Z[0] = softthresh(ZBar[0] + DZ[0], gamma*tau)
+            Z[1] = softthresh(ZBar[1] + DZ[1], gamma*tau)
+            
+            star2 = [None, None]
+            inner = [None, None]
+            inner[0] = Z[0] - DZ[0]
+            inner[1] = Z[1] - DZ[1]
+            t = G.adjoint(inner)
+            star2[0] = X[0] - DX[0] + t[0]
+            star2[1] = X[1] - DX[1] + t[1]
+            t2 = G.gram_resolvent(star2, 1)
+            XBar[0] = t2[0]
+            XBar[1] = t2[1]
+            
+            t = G(XBar)
+            ZBar[0] = t[0]
+            ZBar[1] = t[1]
+            
+            DX[0] = DX[0] - X[0] + XBar[0]
+            DX[1] = DX[1] - X[1] + XBar[1]
+            
+            DZ[0] = DZ[0] - Z[0] + ZBar[0]
+            DZ[1] = DZ[1] - Z[1] + ZBar[1]
+            
+        return X
+    
+    '''
+            # zBar = z + k*Gamma(V)
+            t = G(V)
+            ZBar[0] = Z[0] + k[0]*t[0]
+            ZBar[1] = Z[1] + k[1]*t[1]
+            
+            # z = zBar - softthresh(zBar, tau)
+            Z[0] = ZBar[0] - softthresh(ZBar[0], tau)
+            Z[1] = ZBar[1] - softthresh(ZBar[1], tau)
+            
+            # xBar = x - gamma * G.adjoint(Z)
+            t = G.adjoint(Z)
+            XBar[0] = X[0] - gamma * t[0]
+            XBar[1] = X[1] - gamma * t[1]
+            
+            #storing previous version of x
+            prevX[0] = np.copy(X[0])
+            prevX[1] = np.copy(X[1])
+            
+            # x = HBar.gram_resolvent(XBar + gamma * HBar.adjoint(y), gamma)
+            star = XBar[0] + gamma * H.adjoint(y)
+            X[0] = star + gamma * H.gram(star)
+            X[1] = XBar[1]
+            
+            # v = s + theta(x - prevX)
+            V[0] = X[0] + theta * (X[0] - prevX[0])
+            V[1] = X[1] + theta * (X[1] - prevX[1])
+            if e[i] > e[i-1]:
+                pass
+                #return prevX, e
+        return X, e
+    else:
+        e = []
+        for i in range(m):
+            e.append(energyGen(H,X,y,G,tau))
+            # zBar = z + k*Gamma(V)
+            t = G(V)
+            ZBar[0] = Z[0] + k[0]*t[0]
+            ZBar[1] = Z[1] + k[1]*t[1]
+            
+            # z = zBar - softthresh(zBar, tau)
+            Z[0] = ZBar[0] - softthresh(ZBar[0], tau)
+            Z[1] = ZBar[1] - softthresh(ZBar[1], tau)
+            
+            # xBar = x - gamma * G.adjoint(Z)
+            t = G.adjoint(Z)
+            XBar[0] = X[0] - gamma * t[0]
+            XBar[1] = X[1] - gamma * t[1]
+            
+            #storing previous version of x
+            prevX[0] = np.copy(X[0])
+            prevX[1] = np.copy(X[1])
+            
+            # x = HBar.gram_resolvent(XBar + gamma * HBar.adjoint(y), gamma)
+            star = XBar[0] + gamma * H.adjoint(y)
+            X[0] = star + gamma * H.gram(star)
+            X[1] = XBar[1]
+            
+            # v = s + theta(x - prevX)
+            V[0] = X[0] + theta * (X[0] - prevX[0])
+            V[1] = X[1] + theta * (X[1] - prevX[1])
+            if e[i] > e[i-1]:
+                pass
+                #return prevX, e
+        return X
+
     def energy(H, x, y, tau):
         Gr = Grad(x.shape)
         op1 = 0.5 * np.sum(np.square(y-H(x)))
         op2 = tau * np.sum(np.abs(Gr(x)))
         return op1 + op2
     
-    '''
+
     tau = rho * sig
     if H is None:
         H = Identity(y.shape)  
@@ -317,7 +487,7 @@ def tgv(y, sig, H=None, zeta=.1, rho=1, m=400, return_energy=False):
     else:
         pass
     
-    '''
+
     tau = rho * sig
     if H is None:
         H = Identity(y.shape)  
@@ -363,4 +533,4 @@ def tgv(y, sig, H=None, zeta=.1, rho=1, m=400, return_energy=False):
             X = H.gram_resolvent(XBar[0], gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
             V = X + theta*(X - PrevX)
         return X
-    
+    '''
