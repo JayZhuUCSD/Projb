@@ -59,7 +59,70 @@ class RandomMasking(LinearOperator):
         return np.multiply(self._mask, x)
     def gram_resolvent(self,x,tau):
         return x + (tau * self(x))
+
+class Gamma(LinearOperator):
+    def __init__(self, ishape, zeta):
+        LinearOperator.__init__(self, ishape, oshape=None)
+        self._zeta = zeta
+        
+    def __call__(self, X):
+        x = X[0]
+        z = X[1]
+        Gx = Grad(x.shape)
+        Gz = Grad(z.shape)
+        term1 = Gx(x) - self._zeta * z
+        term2 = np.sum(z, axis=2)
+        return [term1,term2]
     
+    def adjoint(self, X):
+        z = X[0]
+        x = X[1]
+        Gx = Grad(x.shape)
+        term1 = -np.sum(z, axis=2)
+        term2 = -Gx(x) - self._zeta * z
+        return [term1, term2]
+    
+    def gram(self, X):
+        x = X[0]
+        z = X[1]
+        Gx = Grad(x.shape)
+        #laplacian = kernel('laplacian2')
+        #lbd = kernel2fft(laplacian, x.shape[0], x.shape[1])
+        term1 = np.sum(Gx(x), axis=2) + self._zeta * np.sum(z, axis=2)
+        term2 = -self._zeta*Gx(x) + (self._zeta**2) * z - Gx(np.sum(z, axis=2))
+        return [term1, term2]
+    
+    def gram_resolvent(self, X, tau):
+        inter = self.gram(X)    
+        return X + [inter[0] * tau, inter[1] * tau]
+    
+    def norm_2(self):
+        if self._norm2 is not None:
+            return self._norm2
+        K = 100
+        x = np.random.randn(*self.ishape)
+        z = np.zeros(Grad(x.shape)(x).shape)
+        X = [x,z]
+        for k in range(K):
+            y = self.gram(X)
+            x = y[0] / np.sqrt((y[0]**2).sum())
+            z = y[1] / np.sqrt((y[1]**2).sum())
+            X = [x,z]
+        self._norm2 = [np.sqrt(np.sqrt((y[0]**2).sum())), np.sqrt(np.sqrt((y[1]**2).sum()))]
+        return self._norm2
+
+class HBar(LinearOperator):
+    def __init__(self, H):
+        self._H = H
+    def __call__(self, X):
+        return self._H(X[0])
+    def adjoint(self, X):
+        return self._H.adjoint(X[0])
+    def gram(self,X):
+        return [self._H.gram(X[0]),0]
+    def gram_resolvent(self, X):
+        return X + tau * gram(X)
+
 def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False):
     tau = rho * sig
     epsilon = sig**2 * 0.001
@@ -72,8 +135,9 @@ def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False
     
     
     def energy(H, x, y, tau):
-        op1 = 0.5 * np.sum((y-H(x))** 2)
-        op2 = tau * np.sum(np.gradient(x))
+        G = Grad(x.shape)
+        op1 = 0.5 * np.sum(np.square(y-H(x)))
+        op2 = tau * np.sum(np.abs(G(x)))
         return op1 + op2
     
     def loss(H, x, y, tau, epsilon):
@@ -166,7 +230,126 @@ def total_variation(y,sig,H=None, m=400, scheme='gd', rho=1, return_energy=False
                 dX = dX - x + xBar
                 dZ = dZ - z + zBar
             return x
+    elif scheme is 'cp':
+        
+        #initialize
+        G = Grad(y.shape)
+        gamma = 1
+        theta = 1
+        k = 1 / (G.norm_2()**2)
+        x = H.adjoint(y)
+        v = np.zeros(x.shape)
+        z = np.zeros((k*G(v)).shape)
+        zBar = None
+        xBar = None
+        prevX = None
+        
+        if return_energy:
+            e = []
+            for i in range(m):
+                print('iteration %d' %i)
+                e.append(energy(H,x,y,tau))
+                zBar = z + k*G(v)
+                z = zBar - softthresh(zBar, tau)
+                xBar = x - gamma * G.adjoint(z)
+                prevX = np.copy(x)
+                x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
+                v = x + theta*(x - prevX)
+            return x, e
+        else:
+            for i in range(m):
+                print('iteration %d' % i)
+                zBar = z + k*G(v)
+                z = zBar - softthresh(zBar, tau)
+                xBar = x - gamma * G.adjoint(z)
+                prevX = np.copy(x)
+                x = H.gram_resolvent(xBar, gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
+                v = x + theta*(x - prevX)
+            return x
+        
         
 def softthresh(z, t):
     z[np.abs(z) <= t] = 0
     return z - np.sign(z)*t
+
+def tgv(y, sig, H=None, zeta=.1, rho=1, m=400, return_energy=False):
+    '''
+    def energy(H, x, y, tau):
+        G = Grad(x.shape)
+        op1 = 0.5 * np.sum(np.square(y-H(x)))
+        op2 = tau * np.sum(np.abs(G(x)))
+        return op1 + op2
+    
+    tau = rho * sig
+    if H is None:
+        H = Identity(y.shape)  
+    x = H.adjoint(y)
+    
+    G = Gamma(y.shape, zeta)
+    gamma = 1
+    XBar = [x, np.zeros(Grad(x.shape)(x).shape)]  
+    ZBar = [Grad(x.shape)(x), np.zeros(x.shape)]
+    DX = [np.zeros(x.shape), np.zeros(Grad(x.shape)(x).shape)]
+    DZ = [np.zeros(Grad(x.shape)(x).shape), np.zeros(x.shape)]
+    X = None
+    Z = None
+    
+    if return_energy:
+        e = []
+        for i in range(m):
+            if X is not None:
+                e.append(energy(H, X[0], y, tau))
+            X = H.gram_resolvent(XBar[0], gamma) + H.gram_resolvent(DX[0], gamma) + H.gram_resolvent(gamma * H.adjoint(y), gamma)
+            Z = softthresh(ZBar + DZ, gamma*tau)
+            XBar = G.gram_resolvent(X, 1) - G.gram_resolvent(DX, 1) + G.gram_resolvent(G.adjoint(Z - DZ), 1)
+            ZBar = G(XBar)
+            DX = DX - X + XBar
+            DZ = DZ - Z + ZBar
+        return X
+    else:
+        pass
+    
+    '''
+    tau = rho * sig
+    if H is None:
+        H = Identity(y.shape)  
+    x = H.adjoint(y)
+     
+    G = Gamma(y.shape, zeta)
+    gamma = 1
+    theta = 1
+    k = 1 / (G.norm_2()**2)
+    v = np.zeros(x.shape)
+    
+    # update param's img -> (img, vec) vec -> (vec, img)
+    X = [x, np.zeros(Grad(x.shape)(x).shape)]  
+    V = [v, np.zeros(Grad(x.shape)(x).shape)]
+    Z = [np.zeros(Grad(x.shape)(x).shape), np.zeros(x.shape)]
+
+    ZBar = None
+    XBar = None
+    PrevX = None
+
+    if return_energy:
+        e = []
+        for i in range(m):
+            print('iteration %d' %i)
+            e.append(energy(H,X[0],y,tau))
+            ZBar = Z + k*G(v)
+            Z = ZBar - softthresh(ZBar, tau)
+            XBar = X - gamma * G.adjoint(Z)
+            PrevX = np.copy(X)
+            X = H.gram_resolvent(XBar[0], gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
+            V = X + theta*(X - PrevX)
+        return X, e
+    else:
+        for i in range(m):
+            print('iteration %d' % i)
+            ZBar = Z + k*G(v)
+            Z = ZBar - softthresh(ZBar, tau)
+            XBar = X - gamma * G.adjoint(Z)
+            PrevX = np.copy(X)
+            X = H.gram_resolvent(XBar[0], gamma) + H.gram_resolvent(gamma*H.adjoint(y), gamma)
+            V = X + theta*(X - PrevX)
+        return X
+    
