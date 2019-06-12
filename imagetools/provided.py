@@ -10,6 +10,7 @@ import numpy.fft as nf
 import matplotlib
 import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
+import numpy.linalg as la
 
 
 #############
